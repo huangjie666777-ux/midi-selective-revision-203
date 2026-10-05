@@ -10,12 +10,14 @@ class MidiRejection(Exception):
     the track, None when not event specific).
     """
 
-    def __init__(self, message, file=None, track=None, event=None):
+    def __init__(self, message, file=None, track=None, event=None,
+                 action=None):
         super().__init__(message)
         self.message = message
         self.file = file
         self.track = track
         self.event = event
+        self.action = action
 
     def to_detail(self):
         return {
@@ -23,4 +25,5 @@ class MidiRejection(Exception):
             "file": self.file,
             "track": self.track,
             "event": self.event,
+            "action": self.action,
         }

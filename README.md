@@ -59,13 +59,60 @@ curl -s -F reference=@examples/bad_overlap.mid -F performance=@examples/performa
 
 请求之间相互独立，不保存任何状态。
 
+### POST /revise
+
+在 /compare 的同一对齐结果上做选择性修订，返回
+`application/zip`（含 `revised.mid` 与 `audit.json`）；任何一步非法
+则整次拒绝（422），不交付文件。
+
+multipart/form-data 在 /compare 字段之外增加：
+
+| 字段 | 说明 |
+| --- | --- |
+| `actions` | JSON 动作数组（1–1024 条），可直接给字符串或用 `-F actions=@file` 上传 |
+
+动作按错误类别与参考/实奏音索引定位（索引来自 /compare 的
+`errors` 明细），对齐只算一次，不随动作顺序重排：
+
+- `{"op": "fix_pitch", "perf_index": N}`：把错音的实奏音开/关事件
+  音高改为配对参考音高，保留起止 tick 与力度。
+- `{"op": "delete_extra", "perf_index": N}`：删除多奏音的开/关事件。
+- `{"op": "insert_missed", "ref_index": N}`：补漏奏。取参考音高与
+  起止绝对时间（以 tick 0 计时，不平移），经实奏 tempo 分段用有理数
+  精确反解 tick，四舍五入、半 tick 向上，开音力度 80。
+
+拒绝不存在、重复或矛盾（同一实奏音既改又删）的动作；统一规划后，
+取整得到零时长音、负时间或所选通道最终音符重叠均整次拒绝并在
+`detail.action` 中定位动作序号。
+
+输出保留实奏 Type、PPQN、全部轨道、tempo 及未修改事件的内容、绝对
+tick 与相对顺序；同 tick 新增关音先于开音，插入越过轨尾时顺延
+`end_of_track`；重建非负 delta；成品同样受 2 MiB / 40000 事件限制。
+`audit.json` 记录两个源文件与成品的 SHA256 及每个动作的前后音高
+与 tick。
+
+```bash
+curl -s -F reference=@examples/reference.mid -F performance=@examples/performance.mid \
+     -F ref_track=1 -F ref_channel=0 -F perf_track=1 -F perf_channel=0 \
+     -F actions=@examples/actions.json \
+     http://127.0.0.1:8000/revise -o revision.zip
+
+# 冲突动作整次拒绝（detail.action 定位）：
+curl -s -F reference=@examples/reference.mid -F performance=@examples/performance.mid \
+     -F ref_track=1 -F ref_channel=0 -F perf_track=1 -F perf_channel=0 \
+     -F actions=@examples/actions_conflict.json \
+     http://127.0.0.1:8000/revise
+# {"detail":{"message":"conflicting actions for performance note 5",...,"action":1}}
+```
+
 ## 规则与边界
 
 - 文件：仅 SMF Type 0/1 且正 PPQN；拒绝 Type 2 与 SMPTE 时间格式。
   每文件 ≤ 2 MiB、≤ 32 轨、≤ 40000 事件；旋律 1–1024 音。
 - 音符：累积 delta tick；选定通道正力度 `note_on` 开音，`note_off` 与
   零力度 `note_on` 关音；同 tick 先关再开。拒绝孤立关音、未闭合音、
-  零时长音与同音高重叠音。其他通道与踏板等事件忽略。
+  零时长音与任意重叠音（同音高或异音高）。其他通道与踏板等事件忽略。
+- 表单：非文件字段（如 `actions` 长文本）允许至 2 MiB，与文件限制一致。
 - 时间：Type 1 从轨 0 取 tempo，Type 0 取唯一轨；缺省 500000 微秒/四分
   音符。拒绝零 tempo 与同 tick 重复 tempo。按速度段以有理数
   （Fraction）累加微秒再换算毫秒。
@@ -77,6 +124,7 @@ curl -s -F reference=@examples/bad_overlap.mid -F performance=@examples/performa
 
 - `midi_revision203/midi_loader.py`：SMF 解析、限量校验、tempo 时间线、旋律提取。
 - `midi_revision203/align.py`：动态规划对齐与错误分类。
+- `midi_revision203/revise.py`：动作解析校验、修订规划、SMF 改写与 ZIP/审计输出。
 - `midi_revision203/main.py`：FastAPI 路由与 422 定位响应。
 - `midi_revision203/errors.py`：携带文件/轨道/事件位置的拒绝异常。
 - `examples/make_examples.py`：生成 `reference.mid`、`performance.mid`
