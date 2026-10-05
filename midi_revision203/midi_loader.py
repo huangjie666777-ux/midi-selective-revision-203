@@ -75,6 +75,8 @@ def load_midi(data, file_label):
     if len(mid.tracks) > MAX_TRACKS:
         _reject(f"file has {len(mid.tracks)} tracks, limit is {MAX_TRACKS}",
                 file_label)
+    if not mid.tracks:
+        _reject("file has no tracks", file_label)
     total_events = sum(len(t) for t in mid.tracks)
     if total_events > MAX_EVENTS:
         _reject(f"file has {total_events} events, limit is {MAX_EVENTS}",
@@ -82,7 +84,13 @@ def load_midi(data, file_label):
     return mid
 
 
-def build_timeline(mid, file_label):
+def build_timeline_us(mid, file_label):
+    """Return a tick->microseconds (Fraction) converter from the tempo map.
+
+    Type 1 takes tempo events from track 0; Type 0 from its only track.
+    Defaults to 500000 us per quarter. Zero tempo and two tempo events on
+    the same tick are rejected. Time is accumulated rationally per segment.
+    """
     """Return a tick->ms converter based on the tempo map.
 
     Type 1 takes tempo events from track 0; Type 0 from its only track.
@@ -122,7 +130,7 @@ def build_timeline(mid, file_label):
         start_us.append(start_us[-1] + Fraction(delta * segments[i - 1][1],
                                                 ppqn))
 
-    def tick_to_ms(t):
+    def tick_to_us(t):
         # Find the last segment starting at or before t.
         lo, hi = 0, len(starts) - 1
         while lo < hi:
@@ -131,8 +139,18 @@ def build_timeline(mid, file_label):
                 lo = mid_i
             else:
                 hi = mid_i - 1
-        us = start_us[lo] + Fraction((t - starts[lo]) * segments[lo][1], ppqn)
-        return float(us) / 1000.0
+        return start_us[lo] + Fraction((t - starts[lo]) * segments[lo][1],
+                                       ppqn)
+
+    return tick_to_us, segments, start_us
+
+
+def build_timeline(mid, file_label):
+    """Return a tick->ms converter based on the tempo map."""
+    tick_to_us, _, _ = build_timeline_us(mid, file_label)
+
+    def tick_to_ms(t):
+        return float(tick_to_us(t)) / 1000.0
 
     return tick_to_ms
 
@@ -189,7 +207,7 @@ def extract_melody(mid, track_index, channel, tick_to_ms, file_label):
                         track_index, idx)
             melody.append((start_tick, t, start_idx, pitch))
         for idx, pitch in opens:
-            if pitch in open_notes:
+            if open_notes:
                 _reject(f"overlapping note for pitch {pitch}", file_label,
                         track_index, idx)
             open_notes[pitch] = (t, idx)

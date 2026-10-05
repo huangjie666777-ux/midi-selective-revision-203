@@ -59,13 +59,53 @@ curl -s -F reference=@examples/bad_overlap.mid -F performance=@examples/performa
 
 请求之间相互独立，不保存任何状态。
 
+### POST /revise
+
+在 `/compare` 的字段之外，再上传一个 JSON 文件字段 `actions`
+（1–1024 条动作，≤ 2 MiB，作为文件部分上传以避免表单字段大小限制）：
+
+```bash
+curl -s -OJ -F reference=@examples/reference.mid -F performance=@examples/performance.mid \
+     -F ref_track=1 -F ref_channel=0 -F perf_track=1 -F perf_channel=0 \
+     -F actions=@examples/actions.json \
+     http://127.0.0.1:8000/revise
+```
+
+动作依据**原对齐**的错误类别与音索引定位，不随动作顺序重新对齐：
+
+| `type` | `index` 含义 | 效果 |
+| --- | --- | --- |
+| `fix_pitch` | 错音的实奏音索引 | 改实奏开/关音的音高为参考音高，保留起止 tick 与力度 |
+| `delete_extra` | 多奏的实奏音索引 | 删除该音的开/关事件 |
+| `add_missed` | 漏奏的参考音索引 | 按参考音高与起止绝对时间，经实奏 tempo 分段精确反解 tick（四舍五入、半 tick 向上）插入新音，开音力度 80，以 tick 0 计时不平移 |
+
+统一规划全部动作：动作不存在、重复或矛盾，取整后零时长、负时间，
+或最终所选通道音符重叠，均整次拒绝（422，`detail.file` 为
+`"actions"`，`detail.event` 为动作序号），不交付任何文件。
+
+成功返回 `application/zip`，含：
+
+- `revised.mid`：修订后的实奏 SMF。保留 Type、PPQN、全部轨道、tempo
+  及未修改事件的内容、绝对 tick 与相对顺序；同 tick 新增关音先于
+  开音，必要时顺延轨尾；delta 重建为非负。
+- `audit.json`：审计，记录两个源文件与修订文件的 SHA256、对齐摘要、
+  每条动作的前后音高与 tick。
+
+```bash
+# 冲突示例：同一实奏音既改又删，整次拒绝
+curl -s -F reference=@examples/reference.mid -F performance=@examples/performance.mid \
+     -F ref_track=1 -F ref_channel=0 -F perf_track=1 -F perf_channel=0 \
+     -F actions=@examples/actions_conflict.json \
+     http://127.0.0.1:8000/revise
+```
+
 ## 规则与边界
 
 - 文件：仅 SMF Type 0/1 且正 PPQN；拒绝 Type 2 与 SMPTE 时间格式。
   每文件 ≤ 2 MiB、≤ 32 轨、≤ 40000 事件；旋律 1–1024 音。
 - 音符：累积 delta tick；选定通道正力度 `note_on` 开音，`note_off` 与
   零力度 `note_on` 关音；同 tick 先关再开。拒绝孤立关音、未闭合音、
-  零时长音与同音高重叠音。其他通道与踏板等事件忽略。
+  零时长音与任意重叠音（含异音高重叠）。其他通道与踏板等事件忽略。
 - 时间：Type 1 从轨 0 取 tempo，Type 0 取唯一轨；缺省 500000 微秒/四分
   音符。拒绝零 tempo 与同 tick 重复 tempo。按速度段以有理数
   （Fraction）累加微秒再换算毫秒。
@@ -77,10 +117,11 @@ curl -s -F reference=@examples/bad_overlap.mid -F performance=@examples/performa
 
 - `midi_revision203/midi_loader.py`：SMF 解析、限量校验、tempo 时间线、旋律提取。
 - `midi_revision203/align.py`：动态规划对齐与错误分类。
+- `midi_revision203/revision.py`：动作解析、统一修订规划与 SMF 重写。
 - `midi_revision203/main.py`：FastAPI 路由与 422 定位响应。
 - `midi_revision203/errors.py`：携带文件/轨道/事件位置的拒绝异常。
 - `examples/make_examples.py`：生成 `reference.mid`、`performance.mid`
-  及两个反例文件。
-- `tests/test_compare.py`：20 个用例覆盖对齐、时间换算与各类拒绝。
+  及两个反例文件；`actions.json` / `actions_conflict.json` 为修订动作示例。
+- `tests/test_compare.py` / `tests/test_revise.py`：覆盖对齐、时间换算、修订规划与各类拒绝。
 
 当前项目仓库：https://github.com/huangjie666777-ux/midi-selective-revision-203

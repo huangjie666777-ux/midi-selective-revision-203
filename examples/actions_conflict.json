@@ -1,0 +1,4 @@
+[
+  {"type": "fix_pitch", "index": 2},
+  {"type": "delete_extra", "index": 2}
+]
